@@ -92,6 +92,37 @@ a fresh login, along with YouTube Studio and viewer playback. A service restart
 is not a substitute for this full reboot test. This project never reboots the host
 as part of installation.
 
+## Changing settings and upgrading
+
+For camera, image, container-name, port, or state-directory changes, stop the
+services while the old configuration is still present:
+
+```sh
+systemctl --user stop wyze-stream-relay wyze-stream-bridge
+# Edit config.local.json in your editor, keeping private values out of Git.
+python3 wyze_stream.py validate
+systemctl --user start wyze-stream-bridge wyze-stream-relay
+```
+
+To upgrade the scripts on an installed host:
+
+```sh
+systemctl --user stop wyze-stream-relay wyze-stream-bridge
+git pull --ff-only
+python3 wyze_stream.py validate
+python3 wyze_stream.py install-services
+```
+
+The installer refreshes the generated units as well as enabling and starting
+them. These commands leave ignored configuration, credentials, and session state
+on the host. For rollback, stop both services, check out a previously tested
+revision, and reinstall its units. Keep private backups outside the repository.
+
+The YouTube broadcast lifecycle is configured in Studio, independently of Linux
+services. Check the selected event, auto-start/auto-stop behavior, visibility,
+and Stream health after recovery. Reusing an ingestion key does not itself
+guarantee that an ended event will retain the same watch-page URL.
+
 ## Preparing GitHub publication
 
 1. Run tests and the public audit on the machine holding the private deployment.

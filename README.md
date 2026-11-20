@@ -2,6 +2,8 @@
 
 One Wyze camera → one Linux host → one YouTube Live broadcast.
 
+[![checks](https://github.com/cweiture/wyze-stream/actions/workflows/checks.yml/badge.svg)](https://github.com/cweiture/wyze-stream/actions/workflows/checks.yml)
+
 Run a selected camera from a Wyze account on a Raspberry Pi or Linux machine.
 Wyze Bridge receives the camera video, and FFmpeg copies its H.264 packets into
 an encrypted YouTube RTMPS upload with silent stereo AAC audio. Video is not
@@ -26,11 +28,21 @@ On Ubuntu 24.04, install dependencies:
 
 ```sh
 sudo apt update
-sudo apt install podman passt ffmpeg iproute2 ca-certificates python3
+sudo apt install git podman passt ffmpeg iproute2 ca-certificates python3
+git clone https://github.com/cweiture/wyze-stream.git
+cd wyze-stream
 ```
 
 Other distributions need equivalent packages and a Podman release supporting
 `--network=pasta`. Use this project as your normal Linux user, not root.
+Keep the checkout at its installed path: the generated services refer to it.
+
+Before setup, enable encoder-based live streaming on your YouTube channel and
+choose the intended event, visibility, RTMPS server, and stream key in YouTube
+Studio. Enter the server under `youtube.server` in the private configuration if
+it differs from the example. The RTMPS ingestion address is separate from the
+YouTube watch-page URL you share with viewers. See [YouTube's encoder setup](https://support.google.com/youtube/answer/2907883?hl=en)
+and [stream settings](https://support.google.com/youtube/answer/9854503?hl=en).
 
 ```sh
 python3 wyze_stream.py configure
@@ -99,8 +111,11 @@ To stop broadcasting without it returning on reboot:
 systemctl --user disable --now wyze-stream-relay wyze-stream-bridge
 ```
 
-To change settings, edit the private configuration, validate it, then restart both
-services. The relay lock prevents a second managed upload from this deployment.
+Stop both services before changing deployment settings, then edit the private
+configuration, validate it, and start both again. Stop before editing so the old
+container name and state path remain available during shutdown. See the exact
+commands in [deployment details](docs/deployment.md#changing-settings-and-upgrading).
+The relay lock prevents a second managed upload from this deployment.
 `test-bridge.py` and `youtube-relay.sh` remain compatibility entry points.
 
 ## Repeat on another Pi
@@ -134,3 +149,8 @@ that arbitrary new content is safe: review the final file list and staged diff.
 
 No credentials, camera footage, saved sessions, or trace archives belong in Git.
 The original project scripts and documentation are MIT licensed.
+
+For bug reports, open a [GitHub issue](https://github.com/cweiture/wyze-stream/issues)
+with the host architecture, OS, Podman/FFmpeg versions, camera model and firmware,
+and a redacted error excerpt. Keep account credentials, stream keys, camera IDs,
+private network details, and raw state/capture files out of public reports.
