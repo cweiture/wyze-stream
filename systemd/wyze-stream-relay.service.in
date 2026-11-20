@@ -1,0 +1,18 @@
+[Unit]
+Description=Wyze Stream YouTube relay and upload watchdog
+Wants=wyze-stream-bridge.service
+After=wyze-stream-bridge.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=@WORKDIR@
+ExecStart=@COMMAND@ relay
+Restart=always
+RestartSec=10
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

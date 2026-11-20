@@ -1,0 +1,17 @@
+[Unit]
+Description=Wyze Stream camera bridge
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=@WORKDIR@
+ExecStart=@COMMAND@ bridge --supervise
+ExecStop=@COMMAND@ stop-bridge
+Restart=always
+RestartSec=10
+TimeoutStartSec=0
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target

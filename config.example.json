@@ -1,0 +1,25 @@
+{
+  "camera": {
+    "id": "REPLACE_WITH_CAMERA_ID",
+    "model": "GW_WC",
+    "lan_ip": "192.0.2.10",
+    "stream_name": "front_door"
+  },
+  "bridge": {
+    "image": "docker.io/idisposablegithub365/wyze-bridge@sha256:708903d2882c76966ecb29763a075372d89773aa6796d0aab70f04369cc6d521",
+    "container_name": "wyze-stream",
+    "state_dir": "bridge-state",
+    "dashboard_port": 5080,
+    "rtsp_port": 8554,
+    "log_level": "info"
+  },
+  "youtube": {
+    "server": "rtmps://a.rtmps.youtube.com/live2",
+    "retry_seconds": 10,
+    "stall_seconds": 45,
+    "startup_seconds": 90,
+    "poll_seconds": 5,
+    "check_seconds": 90
+  },
+  "secrets_file": "secrets.local.json"
+}
