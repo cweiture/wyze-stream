@@ -10,7 +10,7 @@ or set `WYZE_STREAM_CONFIG`. Secret file names must end in `.local.json`.
 | Setting | Meaning |
 | --- | --- |
 | `camera.id` | Exactly one Wyze Bridge camera identifier; lists are rejected |
-| `camera.model` | Optional single model filter; empty disables the model filter |
+| `camera.model` | Optional model metadata; not passed as an upstream allow selector |
 | `camera.lan_ip` | Optional Gwell LAN IPv4 override; empty omits it |
 | `camera.stream_name` | Exact normalized bridge RTSP name |
 | `bridge.image` | Fully qualified container image; prefer a tested multi-architecture digest |
@@ -33,12 +33,22 @@ Podman `pasta` networking because a prior Window Cam installation froze when
 media traveled through a public relay with a different NAT backend. Revalidate
 LAN reception on each new network and camera model.
 
+Only the camera ID is passed as an upstream allow selector. The bridge combines
+model and ID selectors with OR, so adding a model selector would admit other
+cameras of the same model. Confirm that discovery reports exactly the intended
+camera before enabling the relay; the upstream bridge falls back to all cameras
+if its selectors match none.
+
 ## Secrets and credentials
 
 The private secret fields are `wyze_email`, `wyze_password`, `wyze_api_id`,
 `wyze_api_key`, optional `wyze_totp_key`, `viewer_password`, and `youtube_key`.
 Wyze login values can be absent while a saved bridge session remains usable;
 store the login values to allow fresh login when supported by upstream.
+The application does not automatically read `.env`. Use `configure` to store
+supported fields in the private JSON file; never source unreviewed credential
+files as shell commands. The public audit also checks values from a local `.env`
+without executing it.
 `viewer_password` is generated as random hexadecimal text. Update only YouTube:
 
 ```sh
@@ -80,8 +90,13 @@ bridge's reported `streaming` state can precede actual received video bytes.
 
 An earlier installation showed invalid NAL-unit and repeated-timestamp warnings
 while video continued decoding. Watch for actual freezes or ingestion errors;
-the passthrough relay does not repair source bitstreams. Pi throughput and
-multiple hosts on one Wyze account remain unverified until hardware testing.
+the passthrough relay does not repair source bitstreams. A Pi 5 with 8 GB RAM,
+64-bit Raspberry Pi OS based on Debian 13, and rootless Podman/pasta has been
+tested with a single 1080p H.264 passthrough upload. Concurrent hosts using one
+Wyze account were also exercised, with a different camera and YouTube key on each.
+These checks do not establish capacity for arbitrary extra workloads or long-term
+stability. See the [optional Pi baseline](pi-baseline.md) for management services,
+headless display configuration, maintenance windows, and setup gotchas.
 
 ## Reboot acceptance test
 
@@ -90,7 +105,33 @@ service stop/start and check local decoding plus advancing upload counters.
 During a scheduled maintenance window, reboot and check those same signals from
 a fresh login, along with YouTube Studio and viewer playback. A service restart
 is not a substitute for this full reboot test. This project never reboots the host
-as part of installation.
+as part of installation. Schedule this test because it interrupts the broadcast.
+Record the pre-reboot boot ID and configuration privately:
+
+```sh
+cat /proc/sys/kernel/random/boot_id
+systemctl --user is-enabled wyze-stream-bridge wyze-stream-relay
+loginctl show-user "$USER" -p Linger
+sudo systemctl reboot
+```
+
+After reconnecting, confirm a different boot ID and inspect only this boot:
+
+```sh
+cat /proc/sys/kernel/random/boot_id
+systemctl --user status wyze-stream-bridge wyze-stream-relay --no-pager
+journalctl -b _SYSTEMD_USER_UNIT=wyze-stream-bridge.service --no-pager
+journalctl -b _SYSTEMD_USER_UNIT=wyze-stream-relay.service --no-pager
+python3 wyze_stream.py relay --check --seconds 15
+ss -Otinp state established dport = :443
+```
+
+Allow several minutes for cold camera handshakes. Verify exactly the configured
+camera in the authenticated bridge dashboard and advancing FFmpeg `bytes_acked`
+counters on the same process across two samples. A local remux check verifies
+packet reception, not full decoding; also inspect decoded video and YouTube
+playback. With optional baseline services, check VPN authorization, a connected
+remote desktop display, and enabled maintenance timers after reboot.
 
 ## Changing settings and upgrading
 

@@ -14,7 +14,10 @@ PUBLIC_FILES = (
     'wyze_stream.py', 'test-bridge.py', 'youtube-relay.sh', 'youtube-watchdog.py',
     'systemd/wyze-stream-bridge.service.in', 'systemd/wyze-stream-relay.service.in',
     'tools/prepare_public.py', 'tests/test_wyze_stream.py', 'tests/test_watchdog.py',
-    'tests/test_public_release.py', 'docs/deployment.md',
+    'tests/test_public_release.py', 'docs/deployment.md', 'docs/pi-baseline.md',
+    'tools/pi-baseline/rustdesk-auto-update.py',
+    'tools/pi-baseline/rustdesk-auto-update.service.in',
+    'tools/pi-baseline/rustdesk-auto-update.timer', 'tests/test_rustdesk_update.py',
 )
 PATTERNS = (
     ('private key block', re.compile(r'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----')),
@@ -38,6 +41,20 @@ def private_values(root):
             paths.append(secret_path)
         state_dir = root / config.get('bridge', {}).get('state_dir', 'bridge-state')
         paths.extend(state_dir.glob('*.json'))
+    # A local credential staging file is ignored by Git, but its values must
+    # still be compared with public content. Parse data only; never source it.
+    dotenv = root / '.env'
+    if dotenv.exists():
+        for line in dotenv.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            _, value = line.split('=', 1)
+            value = value.strip()
+            if len(value) > 1 and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            if len(value) >= 8:
+                values.add(value)
     def visit(value):
         if isinstance(value, dict):
             for key, item in value.items():

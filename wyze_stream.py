@@ -155,7 +155,9 @@ def bridge_environment(config, data):
         'BRIDGE_PASSWORD': data['viewer_password'],
         'STREAM_AUTH': 'viewer:' + data['viewer_password'],
         'GWELL_ENABLED': 'true', 'FILTER_MACS': camera['id'],
-        'FILTER_MODELS': camera['model'],
+        # Upstream combines allow selectors with OR, so a model selector would
+        # also admit every other camera of that model on the account.
+        'FILTER_MODELS': '',
         'SNAPSHOT_INTERVAL': '0', 'RECORD_ALL': 'false', 'AUDIO': 'false',
         'LOG_LEVEL': config['bridge']['log_level'],
     })
@@ -342,7 +344,7 @@ def configure(config_path, youtube_only=False):
             raise ConfigError('Create the deployment configuration first.')
         config = read_json(ROOT / 'config.example.json')
         for key, prompt in [('id', 'Camera ID (exactly one)'), ('stream_name', 'Normalized RTSP camera name'),
-                            ('model', 'Model filter (blank for any)'), ('lan_ip', 'Camera LAN IPv4 (blank if unnecessary)')]:
+                            ('model', 'Camera model (optional metadata)'), ('lan_ip', 'Camera LAN IPv4 (blank if unnecessary)')]:
             config['camera'][key] = input(prompt + ' > ').strip()
         validate_config(config)
         private_write(config_path, config)

@@ -1,0 +1,14 @@
+[Unit]
+Description=Update RustDesk from official stable ARM64 releases
+Wants=network-online.target
+After=network-online.target apt-daily-upgrade.service
+ConditionPathExists=/usr/bin/rustdesk
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/systemd-inhibit --what=shutdown --mode=block --who=rustdesk-updater --why=RustDesk-update-in-progress /usr/local/sbin/rustdesk-auto-update --config-home @CONFIG_HOME@
+TimeoutStartSec=infinity
+StandardOutput=journal
+StandardError=journal

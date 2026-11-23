@@ -53,6 +53,17 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(env['FILTER_MODELS'], '')
         self.assertNotIn('GWELL_LAN_IPS', env)
 
+    def test_model_metadata_cannot_admit_another_camera_of_the_same_model(self):
+        cfg = configuration()
+        cfg['camera']['model'] = 'GW_WC'
+        env = ws.bridge_environment(cfg, credentials())
+        cameras = [('TEST_CAMERA_1234', 'GW_WC'), ('OTHER_CAMERA_5678', 'GW_WC')]
+        # The pinned bridge ORs its ID and model allowlists.
+        admitted = [camera_id for camera_id, model in cameras
+                    if camera_id in env['FILTER_MACS'].split(',')
+                    or model in env['FILTER_MODELS'].split(',')]
+        self.assertEqual(admitted, ['TEST_CAMERA_1234'])
+
     def test_credentials_never_appear_in_process_arguments(self):
         cfg, data = configuration(), credentials()
         command = ws.bridge_command(cfg, Path('/tmp/example/config.local.json'), ws.bridge_environment(cfg, data))

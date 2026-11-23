@@ -7,7 +7,7 @@ One Wyze camera → one Linux host → one YouTube Live broadcast.
 Run a selected camera from a Wyze account on a Raspberry Pi or Linux machine.
 Wyze Bridge receives the camera video, and FFmpeg copies its H.264 packets into
 an encrypted YouTube RTMPS upload with silent stereo AAC audio. Video is not
-re-encoded. Each host selects exactly one camera even when the account has more.
+re-encoded. Each host is configured for one camera even when the account has more.
 
 ## Requirements
 
@@ -16,11 +16,16 @@ re-encoded. Each host selects exactly one camera even when the account has more.
 - A supported Wyze camera with compatible firmware, reachable from the host.
 - Wyze login and Developer API ID/key, plus a configured YouTube Live event/key.
 
-A Raspberry Pi 4 with 2 GB or more is a reasonable starting point for one
-passthrough stream; a Pi 5 provides extra headroom. Pi operation has not yet been
-hardware-tested by this project. Use a 64-bit OS, suitable power/cooling, and
-prefer Ethernet. The example pins the verified multi-architecture Wyze Bridge
-4.5.0 release manifest, including `linux/amd64` and `linux/arm64`.
+A Raspberry Pi 5 with 8 GB RAM and 64-bit Raspberry Pi OS based on Debian 13 has
+been hardware-tested with one 1080p H.264 passthrough stream, rootless Podman
+5.4.2, and `pasta`. A Pi 4 with 2 GB or more is an untested starting point for
+the same workload. Use suitable power/cooling and prefer Ethernet; Wi-Fi also
+worked in the Pi 5 test. The example pins the verified multi-architecture Wyze
+Bridge 4.5.0 release manifest, including `linux/amd64` and `linux/arm64`.
+
+For optional SSH, Wi-Fi profiles, Tailscale, headless RustDesk, and automatic
+maintenance, see the [new Pi baseline guide](docs/pi-baseline.md). These services
+are separate from the streaming installer.
 
 ## Set up one host
 
@@ -52,8 +57,8 @@ python3 wyze_stream.py relay --check
 ```
 
 `configure` asks for one camera ID, its normalized RTSP name (for example
-`front_door`), optional model/IP filters, account credentials, and the YouTube
-stream key. All credential prompts are hidden. It creates:
+`front_door`), optional model metadata and LAN IP, account credentials, and the
+YouTube stream key. All credential prompts are hidden. It creates:
 
 - `config.local.json`: per-host settings, based on `config.example.json`.
 - `secrets.local.json`: credentials, with mode 600. Both files are ignored by Git.
@@ -64,7 +69,7 @@ Use the camera ID reported by Wyze Bridge, not a guessed hardware address.
 Gwell Window Cams may use a `GW_WC_...` ID. The stream name is the camera's
 normalized Wyze nickname: lowercase with spaces replaced by underscores.
 For a Window Cam, set its LAN IP and model `GW_WC`; reserve the IP in DHCP.
-For other models, check upstream support and leave unneeded filters empty.
+For other models, check upstream support and leave unneeded metadata/IP fields empty.
 
 The local dashboard is at `http://127.0.0.1:5080/` by default. Both published
 ports bind to loopback and require authentication. Username: `viewer`.
@@ -123,8 +128,10 @@ The relay lock prevents a second managed upload from this deployment.
 Clone the same repository and run setup independently. Give the second Pi its own
 camera selection, private state/secrets, and YouTube event/key. Do not copy one
 Pi's runtime state to another. Account-level Wyze discovery may list all cameras;
-the exact `FILTER_MACS` selector admits only the configured camera. Simultaneous
-hosts sharing one Wyze account still need a deployment test.
+the wrapper sends `FILTER_MACS` as its only allow selector. Verify that the bridge
+admits exactly the assigned camera before broadcasting: upstream falls back to
+all cameras if no ID matches. Simultaneous hosts sharing one account have been
+tested with distinct camera selections and YouTube keys; revalidate each deployment.
 
 See [deployment and troubleshooting](docs/deployment.md) for settings, maintenance,
 and the validation limits. Upstream [camera compatibility](https://github.com/IDisposable/docker-wyze-bridge#camera-support)

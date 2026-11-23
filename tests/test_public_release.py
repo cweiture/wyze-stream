@@ -35,6 +35,21 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(public.audit({'secrets.example.json': b'{"youtube_key": ""}'}))
         self.assertTrue(public.audit({'secrets.example.json': b'{"youtube_key": "populated"}'}))
 
+    def test_dotenv_credentials_are_audited_as_data_without_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.env').write_text(
+                '# ignored comment\nexport WYZE_API_KEY="synthetic-dotenv-secret"\n'
+                'WYZE-PASS=synthetic-hyphen-label-secret\n'
+                f'SHELL_TEXT=$(touch {root / "should-not-exist"})\n')
+            known = public.private_values(root)
+            self.assertIn('synthetic-dotenv-secret', known)
+            self.assertIn('synthetic-hyphen-label-secret', known)
+            self.assertFalse((root / 'should-not-exist').exists())
+            result = public.audit({'README.md': b'synthetic-dotenv-secret'}, known)
+            self.assertTrue(result)
+            self.assertNotIn('synthetic-dotenv-secret', str(result))
+
     def test_private_file_reference_is_not_itself_a_credential(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
