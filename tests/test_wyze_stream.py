@@ -21,6 +21,55 @@ def credentials():
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_new_native_setup_needs_no_wyze_login_or_bridge_identifier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.local.json'
+            url = 'rtsps://' + 'test-user:synthetic-native-password@192.0.2.20:322/stream0'
+            with patch.object(ws.sys.stdin, 'isatty', return_value=True), \
+                    patch.object(ws.getpass, 'getpass', side_effect=[url, 'synthetic-youtube-key']), \
+                    patch('builtins.input', side_effect=AssertionError('Native setup must not prompt for bridge IDs')):
+                ws.configure(path, native_rtsp=True)
+            cfg = ws.load_config(path)
+            data = ws.load_secrets(cfg, path)
+            self.assertEqual(data['camera_rtsp_url'], url)
+            self.assertNotIn('wyze_password', data)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_mode_switch_preserves_bridge_settings_and_private_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.local.json'
+            cfg, data = configuration(), credentials()
+            ws.private_write(path, cfg)
+            ws.private_write(path.parent / 'secrets.local.json', data)
+            url = 'rtsps://' + 'test-user:synthetic-native-password@192.0.2.20:322/stream0'
+            with patch.object(ws.sys.stdin, 'isatty', return_value=True), \
+                    patch.object(ws.getpass, 'getpass', side_effect=[url, '']):
+                ws.configure(path, native_rtsp=True)
+            self.assertEqual(ws.load_config(path), cfg)
+            with patch.object(ws.sys.stdin, 'isatty', return_value=True), \
+                    patch.object(ws.getpass, 'getpass', return_value=''), \
+                    patch('builtins.input', return_value=''):
+                ws.configure(path, bridged=True)
+            self.assertEqual(ws.load_config(path), cfg)
+            self.assertEqual(ws.load_secrets(cfg, path), data)
+
+    def test_native_installer_disables_bridge_and_no_start_does_not_stop_it(self):
+        for no_start in (False, True):
+            with self.subTest(no_start=no_start), tempfile.TemporaryDirectory() as directory:
+                data = credentials()
+                data['camera_rtsp_url'] = 'rtsps://192.0.2.20/stream0'
+                with patch.object(Path, 'home', return_value=Path(directory)), \
+                        patch.object(ws, 'require_tools') as require, \
+                        patch.object(ws.subprocess, 'run') as run:
+                    ws.install_services(configuration(), Path(directory) / 'config.local.json', data, no_start)
+                self.assertNotIn('podman', require.call_args.args)
+                commands = [call.args[0] for call in run.call_args_list]
+                disable = next(cmd for cmd in commands if 'disable' in cmd)
+                enable = next(cmd for cmd in commands if 'enable' in cmd)
+                self.assertEqual('--now' in disable, not no_start)
+                self.assertEqual('--now' in enable, not no_start)
+                self.assertNotIn('wyze-stream-bridge.service', enable)
+
     def test_exactly_one_camera_is_selected(self):
         cfg, data = configuration(), credentials()
         env = ws.bridge_environment(cfg, data)
@@ -105,6 +154,39 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn('-fpre', command)
         self.assertFalse(any('youtube.com' in arg for arg in command))
         self.assertEqual(command[command.index('-t') + 1], '3')
+
+    def test_native_camera_source_is_private_and_supports_tls(self):
+        cfg, data = configuration(), credentials()
+        direct_url = 'rtsps://' + 'test_user:test_password@192.0.2.20:322/stream0'
+        data['camera_rtsp_url'] = direct_url
+        self.assertEqual(ws.camera_source(cfg, data), direct_url)
+        command = ws.ffmpeg_command(cfg, 10, 11)
+        self.assertNotIn(direct_url, ' '.join(command))
+        self.assertIn('tls', command[command.index('-protocol_whitelist') + 1].split(','))
+        self.assertNotIn('test_password', ws.redact('Cannot open ' + direct_url, data))
+        self.assertNotIn('test_password', ws.redact('Cannot open ' + direct_url, {}))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.local.json'
+            ws.private_write(path.parent / 'secrets.local.json', data)
+            self.assertEqual(ws.load_secrets(cfg, path)['camera_rtsp_url'], direct_url)
+        data.pop('camera_rtsp_url')
+        self.assertIn('@127.0.0.1:8554/test_camera', ws.camera_source(cfg, data))
+
+    def test_native_camera_url_rejects_concat_injection_and_invalid_endpoints(self):
+        for url in ('file:///etc/passwd', 'https://example.com/video', 'rtsp:///stream0',
+                    'rtsp://camera:bad/stream0', 'rtsp://camera:99999/stream0',
+                    "rtsp://camera/stream'0", 'rtsp://camera/stream\\0',
+                    'rtsp://camera/stream 0', 'rtsp://camera/stream0\nfile x'):
+            with self.subTest(url=url), self.assertRaises(ws.ConfigError):
+                ws.validate_camera_url(url)
+        escaped_url = 'rtsps://' + 'user:pass%27word@camera/stream0'
+        self.assertEqual(ws.validate_camera_url(escaped_url), escaped_url)
+
+    def test_native_relay_does_not_start_a_bridge(self):
+        rendered = ws.render_units(Path('/tmp/config.local.json'), direct=True)
+        relay = rendered['wyze-stream-relay.service']
+        self.assertNotIn('wyze-stream-bridge.service', relay)
+        self.assertIn('Restart=always', relay)
 
     def test_bridge_refuses_to_adopt_another_camera(self):
         cfg = configuration()

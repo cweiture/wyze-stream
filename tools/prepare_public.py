@@ -6,10 +6,11 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.parse import quote, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_FILES = (
-    '.gitignore', '.github/workflows/checks.yml', 'README.md', 'LICENSE',
+    '.gitignore', '.githooks/pre-commit', '.github/workflows/checks.yml', 'README.md', 'LICENSE',
     'THIRD_PARTY_NOTICES.md', 'config.example.json', 'secrets.example.json',
     'wyze_stream.py', 'test-bridge.py', 'youtube-relay.sh', 'youtube-watchdog.py',
     'systemd/wyze-stream-bridge.service.in', 'systemd/wyze-stream-relay.service.in',
@@ -23,7 +24,7 @@ PATTERNS = (
     ('private key block', re.compile(r'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----')),
     ('GitHub token', re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b')),
     ('AWS access key', re.compile(r'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b')),
-    ('credential-bearing RTSP URL', re.compile(r'rtsp://[^\s/]+:[^\s/@]+@')),
+    ('credential-bearing RTSP URL', re.compile(r'rtsps?://[^\s/]+:[^\s/@]+@', re.I)),
     ('JWT', re.compile(r'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b')),
 )
 
@@ -61,9 +62,16 @@ def private_values(root):
                 if key == 'secrets_file':
                     continue  # A public configuration field naming the private file.
                 if isinstance(item, str) and len(item) >= 8 and any(
-                    part in key.lower() for part in ('password', 'token', 'key', 'email', 'api_id', 'secret', 'enr')
+                    part in key.lower() for part in ('password', 'token', 'key', 'email', 'api_id', 'secret', 'enr', 'rtsp_url')
                 ):
                     values.add(item)
+                    if 'rtsp_url' in key.lower():
+                        parsed = urlsplit(item)
+                        for component in (parsed.username, parsed.password, parsed.hostname):
+                            if component:
+                                decoded = unquote(component)
+                                if len(decoded) >= 4:
+                                    values.update((component, decoded, quote(decoded, safe='')))
                 elif isinstance(item, (dict, list)):
                     visit(item)
         elif isinstance(value, list):

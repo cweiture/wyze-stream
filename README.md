@@ -4,160 +4,202 @@ One Wyze camera → one Linux host → one YouTube Live broadcast.
 
 [![checks](https://github.com/cweiture/wyze-stream/actions/workflows/checks.yml/badge.svg)](https://github.com/cweiture/wyze-stream/actions/workflows/checks.yml)
 
-Run a selected camera from a Wyze account on a Raspberry Pi or Linux machine.
-Wyze Bridge receives the camera video, and FFmpeg copies its H.264 packets into
-an encrypted YouTube RTMPS upload with silent stereo AAC audio. Video is not
-re-encoded. Each host is configured for one camera even when the account has more.
+Stream a Wyze Cam v4 over native RTSPS, or use Wyze Bridge for legacy cameras
+and Window Cams. Both paths copy H.264 video into a verified, encrypted YouTube
+RTMPS upload with silent stereo AAC audio. Video is not re-encoded.
+Each host runs one selected camera and one managed upload.
+
+| Mode | Video path | Camera/account requirements |
+| --- | --- | --- |
+| Native v4 RTSPS | Camera → FFmpeg → YouTube | Enable native RTSPS in the Wyze app; save its separate stream credentials and URL |
+| Bridged legacy / Window Cam | Camera → Wyze Bridge → FFmpeg → YouTube | Supported camera/firmware, Wyze account and Developer API credentials, exact bridge camera ID |
+
+Native v4 RTSPS has been tested on Ubuntu with firmware 4.52.17.27 at
+2560×1440, 20 fps, H.264, including local remux/decode and advancing YouTube
+upload counters. The legacy Window Cam path has been tested at 1920×1080;
+bridged operation also worked on a Raspberry Pi 5. These are tested
+configurations, not a guarantee for every firmware release or long-term uptime.
 
 ## Requirements
 
-- 64-bit Linux, Python 3.10+, systemd, Bash, FFmpeg, Podman with `pasta` support,
-  `passt`, iproute2 (`ss`), and system CA certificates.
-- A supported Wyze camera with compatible firmware, reachable from the host.
-- Wyze login and Developer API ID/key, plus a configured YouTube Live event/key.
+Both modes need 64-bit Linux, Python 3.10+, systemd, Bash, FFmpeg with RTSP/TLS
+support, iproute2 (`ss`), system CA certificates, a reachable camera, and a
+YouTube Live event/stream key. Native mode does not need Podman, Wyze Bridge,
+or Wyze account/API credentials on the host.
 
-A Raspberry Pi 5 with 8 GB RAM and 64-bit Raspberry Pi OS based on Debian 13 has
-been hardware-tested with one 1080p H.264 passthrough stream, rootless Podman
-5.4.2, and `pasta`. A Pi 4 with 2 GB or more is an untested starting point for
-the same workload. Use suitable power/cooling and prefer Ethernet; Wi-Fi also
-worked in the Pi 5 test. The example pins the verified multi-architecture Wyze
-Bridge 4.5.0 release manifest, including `linux/amd64` and `linux/arm64`.
+Bridged mode additionally needs Podman supporting `--network=pasta`, `passt`,
+and a supported Wyze camera and firmware. The example pins Wyze Bridge 4.5.0's
+verified multi-architecture image digest for `linux/amd64` and `linux/arm64`.
 
-For optional SSH, Wi-Fi profiles, Tailscale, headless RustDesk, and automatic
-maintenance, see the [new Pi baseline guide](docs/pi-baseline.md). These services
-are separate from the streaming installer.
+A Pi 5 with 8 GB RAM and 64-bit Raspberry Pi OS based on Debian 13 was tested
+with one bridged 1080p stream, rootless Podman 5.4.2, and `pasta`. A Pi 4 with
+2 GB or more is an untested starting point for that workload. Native 1440p
+operation on a Pi has not been hardware-tested. Prefer Ethernet and suitable
+power/cooling; Wi-Fi also worked in the Pi 5 test.
+For optional administration and maintenance, see the [Pi baseline guide](docs/pi-baseline.md).
 
-## Set up one host
+## Install on one host
 
-On Ubuntu 24.04, install dependencies:
+On Ubuntu 24.04:
 
 ```sh
 sudo apt update
-sudo apt install git podman passt ffmpeg iproute2 ca-certificates python3
+sudo apt install git ffmpeg iproute2 ca-certificates python3
 git clone https://github.com/cweiture/wyze-stream.git
 cd wyze-stream
+git config core.hooksPath .githooks
 ```
 
-Other distributions need equivalent packages and a Podman release supporting
-`--network=pasta`. Use this project as your normal Linux user, not root.
-Keep the checkout at its installed path: the generated services refer to it.
+For bridged mode, also install:
+
+```sh
+sudo apt install podman passt
+```
+
+Use the project as your normal Linux user, not root. Keep the checkout at its
+installed path because generated services refer to it. Other distributions
+need equivalent packages.
 
 Before setup, enable encoder-based live streaming on your YouTube channel and
-choose the intended event, visibility, RTMPS server, and stream key in YouTube
-Studio. Enter the server under `youtube.server` in the private configuration if
-it differs from the example. The RTMPS ingestion address is separate from the
-YouTube watch-page URL you share with viewers. See [YouTube's encoder setup](https://support.google.com/youtube/answer/2907883?hl=en)
+choose the intended event, visibility, RTMPS server, and stream key in Studio.
+The ingestion address differs from the watch-page URL shared with viewers.
+See [YouTube's encoder setup](https://support.google.com/youtube/answer/2907883?hl=en)
 and [stream settings](https://support.google.com/youtube/answer/9854503?hl=en).
+Set `youtube.server` in the private configuration if your destination differs
+from the example.
+
+### Option A: Wyze Cam v4 native RTSPS
+
+In the Wyze app, open the camera's RTSP settings, enable RTSPS, save the RTSP
+username/password, and copy the displayed URL. Credentials are separate from
+the Wyze account login. The tested secure endpoint uses port 322 and path
+`/stream0`; use the URL your camera actually displays and reserve its LAN IP
+in DHCP.
 
 ```sh
-python3 wyze_stream.py configure
+python3 wyze_stream.py configure --native-rtsp
+python3 wyze_stream.py validate
+python3 wyze_stream.py relay --check --seconds 30
+```
+
+At the hidden camera URL prompt, enter the complete URL with the RTSP username
+and password in its user-info component. Percent-encode reserved characters in
+credentials. Never paste a credential-bearing URL into a shell command, issue,
+or commit. Setup asks for the YouTube key privately and does not ask for Wyze
+login/API credentials or a bridge camera ID.
+
+The direct source must supply H.264 for this relay. The tested v4 main stream
+preserves 1440p/20 fps without transcoding. Native RTSP without TLS is also
+supported, but RTSPS encrypts camera traffic. Camera certificate verification
+is currently not enabled; YouTube's separate TLS connection is verified.
+
+### Option B: legacy or Window Cam through Wyze Bridge
+
+```sh
+python3 wyze_stream.py configure --bridged
 python3 wyze_stream.py validate
 python3 wyze_stream.py bridge
-python3 wyze_stream.py relay --check
+python3 wyze_stream.py relay --check --seconds 30
 ```
 
-`configure` asks for one camera ID, its normalized RTSP name (for example
-`front_door`), optional model metadata and LAN IP, account credentials, and the
-YouTube stream key. All credential prompts are hidden. It creates:
+Setup asks for the exact bridge camera ID, normalized stream name, optional
+model/LAN IP, Wyze account and Developer API credentials, and YouTube key.
+All credential prompts are hidden. Plain `configure` retains an existing mode
+and defaults to bridged setup on a new host.
 
-- `config.local.json`: per-host settings, based on `config.example.json`.
-- `secrets.local.json`: credentials, with mode 600. Both files are ignored by Git.
-- `bridge-state/`: private saved Wyze session, generated media configuration,
-  and relay lock. Its directory has mode 700 and is ignored by Git.
+Use the ID reported by Wyze Bridge, not a guessed hardware address. Window Cams
+may use a `GW_WC_...` ID. Normalize the Wyze nickname to lowercase with spaces
+replaced by underscores. For a Window Cam, set model `GW_WC` and its reserved
+LAN IP. Leave unnecessary model/IP fields blank for other cameras. Verify that
+exactly the intended camera appears before broadcasting: upstream falls back
+to all cameras if no filter ID matches.
 
-Use the camera ID reported by Wyze Bridge, not a guessed hardware address.
-Gwell Window Cams may use a `GW_WC_...` ID. The stream name is the camera's
-normalized Wyze nickname: lowercase with spaces replaced by underscores.
-For a Window Cam, set its LAN IP and model `GW_WC`; reserve the IP in DHCP.
-For other models, check upstream support and leave unneeded metadata/IP fields empty.
+The authenticated bridge dashboard defaults to `http://127.0.0.1:5080/`.
+Dashboard and RTSP ports bind only to loopback. Username: `viewer`; the generated
+password is stored privately. Camera audio, recording, and periodic snapshots
+are disabled. Native mode does not run this dashboard.
 
-The local dashboard is at `http://127.0.0.1:5080/` by default. Both published
-ports bind to loopback and require authentication. Username: `viewer`.
-The generated viewer password is in the private secrets file. View it locally;
-do not paste it into issue reports. The RTSP port and dashboard port are configurable.
-Camera audio, recording, and periodic snapshots are disabled by this deployment.
+## Private local files
 
-A local check writes FLV to `/dev/null` and never contacts YouTube. A short check:
+Setup writes `config.local.json` and mode-600 `secrets.local.json`; both are
+ignored by Git. Native `camera_rtsp_url`, Wyze login/API credentials, viewer
+password, and YouTube key belong only in the secrets file. Unused bridge
+settings are retained for rollback. `bridge-state/` is ignored, mode 700, and
+holds bridge sessions and the relay lock. The application does not source `.env`.
 
-```sh
-python3 wyze_stream.py relay --check --seconds 15
-```
+A local `relay --check` writes to `/dev/null` and never uploads to YouTube.
+It checks packet reception/remuxing; separately inspect decoded video and
+viewer playback. See [deployment procedures](docs/deployment.md) for diagnosis,
+credential rotation, mode switching, rollback, and reboot acceptance.
 
 ## Survive reboot and logout
 
-Stop any older relay for this camera/key before enabling the new relay. Then:
+Stop any older relay using this camera/key, then install:
 
 ```sh
 python3 wyze_stream.py install-services
-systemctl --user status wyze-stream-bridge wyze-stream-relay
+systemctl --user status wyze-stream-relay --no-pager
 journalctl --user -u wyze-stream-relay -f
 ```
 
-The installer writes persistent user services, enables user lingering, and starts
-both services. Lingering lets the user's services start at boot without a desktop
-login. If policy prevents `loginctl enable-linger`, an administrator must enable it
-for the deployment user before unattended boot will work. Installation does not reboot.
+The installer enables user lingering and persistent services. Native mode starts
+only the relay and disables/stops the unused bridge; bridged mode enables both.
+The relay retries camera/YouTube failures, and an upload watchdog recycles FFmpeg
+when acknowledged upload bytes stall. In bridged mode, systemd also restarts the
+bridge after container exits. Credentials stay out of FFmpeg arguments and relay
+logs are redacted. Installation does not reboot.
 
-The bridge service adopts the matching running container or recreates it from
-private configuration. systemd restarts it after container exits. The relay retries
-camera/YouTube connection failures. An upload watchdog checks acknowledged TCP
-bytes and recycles FFmpeg after a stall. systemd restarts the relay if its parent
-or watchdog exits. Saved Wyze sessions and optional stored login credentials allow
-noninteractive startup; revoked credentials or expired access may require setup again.
+If lingering needs administrator authorization, have an administrator enable it
+for the deployment user. Services retry while networking becomes available;
+active services alone do not prove viewer playback. Confirm the intended picture
+and Stream health in YouTube Studio. Keep camera audio private: this relay always
+uploads generated silence.
 
-Network connectivity can arrive after the user manager starts: services keep
-retrying without relying on a user-level `network-online.target`. Camera media
-startup may take additional time after the units become active. Confirm the picture
-and ingestion health in YouTube Studio; active services alone do not prove playback.
-
-To stop broadcasting without it returning on reboot:
+To stop broadcasting persistently:
 
 ```sh
 systemctl --user disable --now wyze-stream-relay wyze-stream-bridge
 ```
 
-Stop both services before changing deployment settings, then edit the private
-configuration, validate it, and start both again. Stop before editing so the old
-container name and state path remain available during shutdown. See the exact
-commands in [deployment details](docs/deployment.md#changing-settings-and-upgrading).
-The relay lock prevents a second managed upload from this deployment.
+Stop services before camera/settings/mode changes, then validate, locally test,
+and reinstall services for the selected mode. Follow the exact
+[switching and upgrade procedures](docs/deployment.md#changing-settings-modes-and-upgrading).
+The relay lock prevents duplicate managed uploads from one deployment.
 `test-bridge.py` and `youtube-relay.sh` remain compatibility entry points.
 
-## Repeat on another Pi
+## Repeat on another Pi or Linux host
 
-Clone the same repository and run setup independently. Give the second Pi its own
-camera selection, private state/secrets, and YouTube event/key. Do not copy one
-Pi's runtime state to another. Account-level Wyze discovery may list all cameras;
-the wrapper sends `FILTER_MACS` as its only allow selector. Verify that the bridge
-admits exactly the assigned camera before broadcasting: upstream falls back to
-all cameras if no ID matches. Simultaneous hosts sharing one account have been
-tested with distinct camera selections and YouTube keys; revalidate each deployment.
+Clone and configure each host independently with its own camera, private files,
+and YouTube key/event. Do not copy runtime state. With a bridge, the wrapper sends
+only `FILTER_MACS` as its allow selector and must admit exactly the assigned camera.
+Distinct bridged cameras/YouTube keys on simultaneous hosts sharing one account
+were tested; revalidate each installation. Native mode avoids account discovery
+on the host and connects only to its saved camera URL.
 
-See [deployment and troubleshooting](docs/deployment.md) for settings, maintenance,
-and the validation limits. Upstream [camera compatibility](https://github.com/IDisposable/docker-wyze-bridge#camera-support)
-varies by model and firmware. This repository packages original deployment scripts;
-it does not bundle the upstream bridge. See [third-party notices](THIRD_PARTY_NOTICES.md).
+Upstream [bridge camera compatibility](https://github.com/IDisposable/docker-wyze-bridge#camera-support)
+varies by model/firmware. This project does not bundle Wyze Bridge; see
+[third-party notices](THIRD_PARTY_NOTICES.md).
 
-## Development and public release
+## Development and safe publication
 
 ```sh
 python3 -m unittest discover -s tests -v
 bash -n youtube-relay.sh
 python3 tools/prepare_public.py --audit-only
+python3 tools/prepare_public.py --staged
 python3 tools/prepare_public.py --output /tmp/wyze-stream-public
 ```
 
-The release tool copies only an explicit allowlist of source, examples, tests, and
-documentation. It excludes runtime data, private tooling, logs, and capture archives.
-It blocks common credential formats and matches against known local secrets and
-camera settings without printing those values. This is a useful guard, not proof
-that arbitrary new content is safe: review the final file list and staged diff.
-`--staged` audits the entire Git index before a push. Never run `git add -f` on runtime data.
+Enable `.githooks/pre-commit` with the `core.hooksPath` command above. It audits
+the entire Git index before each commit and blocks files outside the public
+allowlist, credential-bearing RTSP/RTSPS URLs, common tokens, and known local
+secret values, including separate native URL passwords. The CI audit runs
+without your private secrets. This is a guard, not proof against every possible
+secret; review the staged diff and never force-add private files or bypass the hook.
 
-No credentials, camera footage, saved sessions, or trace archives belong in Git.
-The original project scripts and documentation are MIT licensed.
-
-For bug reports, open a [GitHub issue](https://github.com/cweiture/wyze-stream/issues)
-with the host architecture, OS, Podman/FFmpeg versions, camera model and firmware,
-and a redacted error excerpt. Keep account credentials, stream keys, camera IDs,
-private network details, and raw state/capture files out of public reports.
+The exporter copies only allowlisted text files and excludes runtime data,
+private tooling, logs, footage, and capture archives. Keep credentials, account
+sessions, camera IDs, private network details, and traces out of issues and Git.
+The original scripts/documentation are MIT licensed. Report bugs with the mode,
+OS/architecture, software versions, camera model/firmware, and a redacted error
+excerpt through [GitHub issues](https://github.com/cweiture/wyze-stream/issues).

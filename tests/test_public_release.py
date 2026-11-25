@@ -26,7 +26,8 @@ class ReleaseTests(unittest.TestCase):
         examples = ['gh' + 'p_' + 'x' * 36,
                     '-----BEGIN ' + 'PRIVATE KEY-----',
                     'AK' + 'IA' + 'A' * 16,
-                    'rtsp://' + 'viewer:example@host/camera']
+                    'rtsp://' + 'viewer:example@host/camera',
+                    'RTSPS://' + 'viewer:example@host/camera']
         for example in examples:
             with self.subTest(example_type=example[:5]):
                 self.assertTrue(public.audit({'README.md': example.encode()}))
@@ -34,6 +35,18 @@ class ReleaseTests(unittest.TestCase):
     def test_empty_secret_example_only(self):
         self.assertFalse(public.audit({'secrets.example.json': b'{"youtube_key": ""}'}))
         self.assertTrue(public.audit({'secrets.example.json': b'{"youtube_key": "populated"}'}))
+
+    def test_native_url_components_cannot_leak_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            password = 'synthetic-native-password!'
+            url = 'rtsps://' + 'synthetic-user:synthetic-native-password%21@192.0.2.20:322/stream0'
+            (root / 'secrets.local.json').write_text(json.dumps({'camera_rtsp_url': url}))
+            known = public.private_values(root)
+            self.assertIn(password, known)
+            self.assertIn('synthetic-native-password%21', known)
+            for value in (url, password, 'synthetic-user', '192.0.2.20'):
+                self.assertTrue(public.audit({'README.md': value.encode()}, known))
 
     def test_dotenv_credentials_are_audited_as_data_without_execution(self):
         with tempfile.TemporaryDirectory() as directory:

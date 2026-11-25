@@ -16,12 +16,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / 'config.local.json'
 SECRET_FIELDS = {
     'wyze_email', 'wyze_password', 'wyze_api_id', 'wyze_api_key',
-    'wyze_totp_key', 'viewer_password', 'youtube_key',
+    'wyze_totp_key', 'viewer_password', 'youtube_key', 'camera_rtsp_url',
 }
 ENV_FIELDS = {
     'wyze_email': 'WYZE_EMAIL', 'wyze_password': 'WYZE_PASSWORD',
@@ -139,7 +140,31 @@ def load_secrets(config, config_path):
     key = data.get('youtube_key', '')
     if key and not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', key):
         raise ConfigError('Invalid YouTube stream key format.')
+    if data.get('camera_rtsp_url'):
+        validate_camera_url(data['camera_rtsp_url'])
     return data
+
+
+def validate_camera_url(url):
+    try:
+        parsed = urlsplit(url)
+        valid = (parsed.scheme in ('rtsp', 'rtsps') and parsed.hostname
+                 and parsed.path and not parsed.fragment
+                 and not any(c.isspace() or c in "'\\" for c in url))
+        # Accessing port also validates its syntax and range.
+        parsed.port
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigError('camera_rtsp_url must be an RTSP(S) URL; percent-encode spaces, quotes, and backslashes.')
+    return url
+
+
+def camera_source(config, data):
+    if data.get('camera_rtsp_url'):
+        return validate_camera_url(data['camera_rtsp_url'])
+    return ("rtsp://viewer:" + data['viewer_password'] +
+            f"@127.0.0.1:{config['bridge']['rtsp_port']}/{config['camera']['stream_name']}")
 
 
 def require_youtube(data):
@@ -190,6 +215,8 @@ def podman(*args, **kwargs):
 
 
 def bridge(config, config_path, data, supervise=False):
+    if data.get('camera_rtsp_url'):
+        raise ConfigError('Native RTSP(S) is selected; start the relay directly or configure --bridged first.')
     require_tools('podman', 'pasta')
     name = config['bridge']['container_name']
     state = relative_path(config_path, config['bridge']['state_dir'])
@@ -247,7 +274,7 @@ def stop_bridge(config):
 def ffmpeg_command(config, source_fd, key_fd, check=False, seconds=None):
     command = [
         'ffmpeg', '-hide_banner', '-nostdin', '-loglevel', 'warning', '-stats', '-stats_period', '30',
-        '-protocol_whitelist', 'pipe,file,tcp,rtp,rtsp,udp', '-thread_queue_size', '128',
+        '-protocol_whitelist', 'pipe,file,tcp,tls,rtp,rtsp,rtsps,udp', '-thread_queue_size', '128',
         '-f', 'concat', '-safe', '0', '-i', f'/dev/fd/{source_fd}',
         '-thread_queue_size', '64', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
         '-map', '0:v:0', '-map', '1:a:0', '-shortest', '-c:v', 'copy',
@@ -264,7 +291,7 @@ def ffmpeg_command(config, source_fd, key_fd, check=False, seconds=None):
 def redact(line, data):
     for value in sorted((v for v in data.values() if v), key=len, reverse=True):
         line = line.replace(value, '[redacted]')
-    return re.sub(r'(rtsp://)[^\s/@]+:[^\s/@]+@', r'\1[redacted]@', line)
+    return re.sub(r'(rtsps?://)[^\s/@]+:[^\s/@]+@', r'\1[redacted]@', line)
 
 
 def stop_process(process):
@@ -278,10 +305,7 @@ def stop_process(process):
 
 
 def encode(config, data, check=False, seconds=None, watchdog=None):
-    password = data['viewer_password']
-    bridge_cfg = config['bridge']
-    source = ("ffconcat version 1.0\nfile 'rtsp://viewer:" + password +
-              f"@127.0.0.1:{bridge_cfg['rtsp_port']}/{config['camera']['stream_name']}'\n"
+    source = ("ffconcat version 1.0\nfile '" + camera_source(config, data) + "'\n"
               'option rtsp_transport tcp\noption timeout 15000000\n')
     # Anonymous file descriptors keep credentials out of argv and named files.
     with tempfile.TemporaryFile() as source_file, tempfile.TemporaryFile() as key_file:
@@ -334,25 +358,40 @@ def relay(config, config_path, data, check=False, seconds=None):
             stop_process(watchdog)
 
 
-def configure(config_path, youtube_only=False):
+def configure(config_path, youtube_only=False, native_rtsp=False, bridged=False):
     if not sys.stdin.isatty():
         raise ConfigError('Run configure in your own terminal; secret input is hidden.')
-    if config_path.exists():
+    existing = config_path.exists()
+    if existing:
         config = load_config(config_path)
     else:
         if youtube_only:
             raise ConfigError('Create the deployment configuration first.')
         config = read_json(ROOT / 'config.example.json')
-        for key, prompt in [('id', 'Camera ID (exactly one)'), ('stream_name', 'Normalized RTSP camera name'),
-                            ('model', 'Camera model (optional metadata)'), ('lan_ip', 'Camera LAN IPv4 (blank if unnecessary)')]:
-            config['camera'][key] = input(prompt + ' > ').strip()
-        validate_config(config)
-        private_write(config_path, config)
     secret_path = relative_path(config_path, config['secrets_file'])
     data = read_json(secret_path, private=True) if secret_path.exists() else {}
+    direct = native_rtsp or (bool(data.get('camera_rtsp_url')) and not bridged)
+    if not youtube_only and direct:
+        value = getpass.getpass('Camera RTSP(S) URL including credentials (hidden; blank keeps existing) > ').strip()
+        url = value or data.get('camera_rtsp_url', '')
+        data['camera_rtsp_url'] = validate_camera_url(url)
+        if not existing:
+            # Unused bridge fields retain a valid shape for later migration.
+            config['camera'] = {'id': 'NATIVE_RTSP', 'stream_name': 'native_camera',
+                                'model': '', 'lan_ip': ''}
+    elif not youtube_only and (not existing or bridged):
+        placeholder = config['camera']['id'] == 'NATIVE_RTSP'
+        for key, prompt in [('id', 'Camera ID (exactly one)'), ('stream_name', 'Normalized RTSP camera name'),
+                            ('model', 'Camera model (optional metadata)'), ('lan_ip', 'Camera LAN IPv4 (blank if unnecessary)')]:
+            previous = config['camera'][key] if existing else ''
+            if placeholder:
+                previous = ''
+            config['camera'][key] = input(prompt + ' (blank keeps existing, if set) > ').strip() or previous
+        data.pop('camera_rtsp_url', None)
+    validate_config(config)
     if not data.get('viewer_password'):
         data['viewer_password'] = secrets.token_hex(16)
-    if not youtube_only:
+    if not youtube_only and not direct:
         print('Enter Wyze login credentials. Leave an existing value blank to keep it.')
         for field, label in [('wyze_email', 'Wyze email'), ('wyze_password', 'Wyze password'),
                              ('wyze_api_id', 'Wyze Developer API ID'), ('wyze_api_key', 'Wyze Developer API key'),
@@ -366,6 +405,7 @@ def configure(config_path, youtube_only=False):
             raise ConfigError('Invalid stream key format; nothing saved.')
         data['youtube_key'] = key
     private_write(secret_path, data)
+    private_write(config_path, config)
     load_secrets(config, config_path)
     print('Private configuration saved with mode 600. No secrets were printed.')
 
@@ -377,7 +417,7 @@ def unit_quote(value):
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
 
 
-def render_units(config_path):
+def render_units(config_path, direct=False):
     replacements = {
         # WorkingDirectory is a path directive, not an Exec command: quotes are literal.
         '@WORKDIR@': str(ROOT).replace('%', '%%'),
@@ -389,23 +429,35 @@ def render_units(config_path):
         text = template.read_text()
         for old, new in replacements.items():
             text = text.replace(old, new)
+        if direct and template.name == 'wyze-stream-relay.service.in':
+            text = text.replace('Wants=wyze-stream-bridge.service\n', '')
+            text = text.replace('After=wyze-stream-bridge.service\n', '')
         result[template.name.removesuffix('.in')] = text
     return result
 
 
 def install_services(config, config_path, data, no_start=False):
-    require_tools('podman', 'pasta', 'ffmpeg', 'ss', 'systemctl', 'loginctl')
+    direct = bool(data.get('camera_rtsp_url'))
+    require_tools('ffmpeg', 'ss', 'systemctl', 'loginctl')
+    if not direct:
+        require_tools('podman', 'pasta')
     require_youtube(data)
     directory = Path.home() / '.config/systemd/user'
     directory.mkdir(parents=True, exist_ok=True)
-    for name, text in render_units(config_path).items():
+    for name, text in render_units(config_path, direct=direct).items():
         (directory / name).write_text(text)
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
     subprocess.run(['loginctl', 'enable-linger', getpass.getuser()], check=True)
     command = ['systemctl', '--user', 'enable']
     if not no_start:
         command.append('--now')
-    subprocess.run([*command, 'wyze-stream-bridge.service', 'wyze-stream-relay.service'], check=True)
+    units = ['wyze-stream-relay.service']
+    if direct:
+        stop = [] if no_start else ['--now']
+        subprocess.run(['systemctl', '--user', 'disable', *stop, 'wyze-stream-bridge.service'], check=True)
+    else:
+        units.insert(0, 'wyze-stream-bridge.service')
+    subprocess.run([*command, *units], check=True)
     print('Reboot services installed and enabled; user lingering is enabled.')
 
 
@@ -414,7 +466,10 @@ def main():
     parser.add_argument('--config', type=Path, default=Path(os.environ.get('WYZE_STREAM_CONFIG', DEFAULT_CONFIG)))
     commands = parser.add_subparsers(dest='command', required=True)
     setup = commands.add_parser('configure', help='Create private configuration with hidden secret prompts')
-    setup.add_argument('--youtube-only', action='store_true')
+    mode = setup.add_mutually_exclusive_group()
+    mode.add_argument('--youtube-only', action='store_true')
+    mode.add_argument('--native-rtsp', action='store_true', help='Configure a direct RTSP(S) camera URL privately')
+    mode.add_argument('--bridged', action='store_true', help='Configure Wyze Bridge and clear the native camera URL')
     commands.add_parser('validate', help='Validate configuration and private credentials without printing them')
     run_bridge = commands.add_parser('bridge')
     run_bridge.add_argument('--supervise', action='store_true')
@@ -429,7 +484,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(StopRequested()))
     try:
         if args.command == 'configure':
-            configure(config_path, args.youtube_only)
+            configure(config_path, args.youtube_only, args.native_rtsp, args.bridged)
             return
         config = load_config(config_path)
         if args.command == 'stop-bridge':
@@ -437,7 +492,8 @@ def main():
         data = load_secrets(config, config_path)
         if args.command == 'validate':
             require_youtube(data)
-            print('Configuration and secrets are valid. Exactly one camera is selected.')
+            source = 'native RTSP(S)' if data.get('camera_rtsp_url') else 'Wyze Bridge'
+            print(f'Configuration and secrets are valid. Exactly one camera is selected via {source}.')
         elif args.command == 'bridge':
             raise SystemExit(bridge(config, config_path, data, args.supervise))
         elif args.command == 'relay':
