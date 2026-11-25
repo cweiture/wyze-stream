@@ -32,16 +32,21 @@ PATTERNS = (
 def private_values(root):
     """Compare release bytes to known local credentials without printing any value."""
     values = set()
-    paths = list(root.glob('*.local.json'))
+    config_paths = list(root.glob('*.local.json'))
+    paths = list(config_paths)
     paths += list((root / 'bridge-state').glob('*.json'))
-    config_path = root / 'config.local.json'
-    if config_path.exists():
+    for config_path in config_paths:
         config = json.loads(config_path.read_text())
+        if not isinstance(config, dict) or not isinstance(config.get('bridge'), dict):
+            continue
         secret_path = root / config.get('secrets_file', 'secrets.local.json')
         if secret_path.exists():
             paths.append(secret_path)
         state_dir = root / config.get('bridge', {}).get('state_dir', 'bridge-state')
         paths.extend(state_dir.glob('*.json'))
+        for value in config.get('camera', {}).values():
+            if isinstance(value, str) and len(value) >= 8:
+                values.add(value)
     # A local credential staging file is ignored by Git, but its values must
     # still be compared with public content. Parse data only; never source it.
     dotenv = root / '.env'
@@ -82,11 +87,6 @@ def private_values(root):
             visit(json.loads(path.read_text()))
         except (OSError, ValueError):
             raise ValueError('Cannot audit private comparison input: ' + path.name) from None
-    if config_path.exists():
-        config = json.loads(config_path.read_text())
-        for value in config.get('camera', {}).values():
-            if isinstance(value, str) and len(value) >= 8:
-                values.add(value)
     return values
 
 

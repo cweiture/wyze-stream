@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One camera, one host, one YouTube broadcast. Python standard library only."""
+"""One selected camera and YouTube broadcast per deployment. Python standard library only."""
 
 import argparse
 import fcntl
@@ -368,6 +368,24 @@ def configure(config_path, youtube_only=False, native_rtsp=False, bridged=False)
         if youtube_only:
             raise ConfigError('Create the deployment configuration first.')
         config = read_json(ROOT / 'config.example.json')
+        profile = re.fullmatch(r'config\.([a-z][a-z0-9-]{0,31})\.local\.json', config_path.name)
+        if profile:
+            name = profile[1]
+            config['secrets_file'] = f'secrets.{name}.local.json'
+            config['bridge'].update(container_name=f'wyze-stream-{name}', state_dir=f'state/{name}')
+            used = set()
+            for other in config_path.parent.glob('*.local.json'):
+                try:
+                    settings = read_json(other).get('bridge', {})
+                    if isinstance(settings, dict):
+                        used.update(settings[key] for key in ('dashboard_port', 'rtsp_port')
+                                    if type(settings.get(key)) is int)
+                except ConfigError:
+                    continue
+            for field in ('dashboard_port', 'rtsp_port'):
+                while config['bridge'][field] in used:
+                    config['bridge'][field] += 1
+                used.add(config['bridge'][field])
     secret_path = relative_path(config_path, config['secrets_file'])
     data = read_json(secret_path, private=True) if secret_path.exists() else {}
     direct = native_rtsp or (bool(data.get('camera_rtsp_url')) and not bridged)
@@ -417,7 +435,15 @@ def unit_quote(value):
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
 
 
-def render_units(config_path, direct=False):
+def service_names(instance=''):
+    if instance and not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', instance):
+        raise ConfigError('Instance must start with a lowercase letter and contain at most 32 lowercase letters, digits, or hyphens.')
+    prefix = 'wyze-stream' + ('-' + instance if instance else '')
+    return {role: f'{prefix}-{role}.service' for role in ('bridge', 'relay')}
+
+
+def render_units(config_path, direct=False, instance=''):
+    names = service_names(instance)
     replacements = {
         # WorkingDirectory is a path directive, not an Exec command: quotes are literal.
         '@WORKDIR@': str(ROOT).replace('%', '%%'),
@@ -432,11 +458,20 @@ def render_units(config_path, direct=False):
         if direct and template.name == 'wyze-stream-relay.service.in':
             text = text.replace('Wants=wyze-stream-bridge.service\n', '')
             text = text.replace('After=wyze-stream-bridge.service\n', '')
-        result[template.name.removesuffix('.in')] = text
+        name = template.name.removesuffix('.in')
+        for role, qualified in names.items():
+            original = f'wyze-stream-{role}.service'
+            text = text.replace(original, qualified)
+            if name == original:
+                name = qualified
+        if instance:
+            text = text.replace('Description=Wyze Stream ', f'Description=Wyze Stream ({instance}) ')
+        result[name] = text
     return result
 
 
-def install_services(config, config_path, data, no_start=False):
+def install_services(config, config_path, data, no_start=False, instance=''):
+    names = service_names(instance)
     direct = bool(data.get('camera_rtsp_url'))
     require_tools('ffmpeg', 'ss', 'systemctl', 'loginctl')
     if not direct:
@@ -444,19 +479,19 @@ def install_services(config, config_path, data, no_start=False):
     require_youtube(data)
     directory = Path.home() / '.config/systemd/user'
     directory.mkdir(parents=True, exist_ok=True)
-    for name, text in render_units(config_path, direct=direct).items():
+    for name, text in render_units(config_path, direct=direct, instance=instance).items():
         (directory / name).write_text(text)
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
     subprocess.run(['loginctl', 'enable-linger', getpass.getuser()], check=True)
     command = ['systemctl', '--user', 'enable']
     if not no_start:
         command.append('--now')
-    units = ['wyze-stream-relay.service']
+    units = [names['relay']]
     if direct:
         stop = [] if no_start else ['--now']
-        subprocess.run(['systemctl', '--user', 'disable', *stop, 'wyze-stream-bridge.service'], check=True)
+        subprocess.run(['systemctl', '--user', 'disable', *stop, names['bridge']], check=True)
     else:
-        units.insert(0, 'wyze-stream-bridge.service')
+        units.insert(0, names['bridge'])
     subprocess.run([*command, *units], check=True)
     print('Reboot services installed and enabled; user lingering is enabled.')
 
@@ -479,6 +514,7 @@ def main():
     run_relay.add_argument('--seconds', type=int, help='Local check duration, 1–3600 seconds')
     install = commands.add_parser('install-services')
     install.add_argument('--no-start', action='store_true')
+    install.add_argument('--instance', default='', help='Install isolated named services for an additional deployment')
     args = parser.parse_args()
     config_path = args.config.expanduser().resolve()
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(StopRequested()))
@@ -501,7 +537,7 @@ def main():
                 raise ConfigError('--seconds requires --check and a duration from 1 to 3600.')
             raise SystemExit(relay(config, config_path, data, args.check, args.seconds))
         elif args.command == 'install-services':
-            install_services(config, config_path, data, args.no_start)
+            install_services(config, config_path, data, args.no_start, args.instance)
     except (KeyboardInterrupt, StopRequested):
         return
     except (ConfigError, OSError, subprocess.SubprocessError) as error:

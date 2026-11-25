@@ -1,13 +1,15 @@
 # wyze-stream
 
-One Wyze camera → one Linux host → one YouTube Live broadcast.
+One Linux host → independent Wyze camera streams → separate YouTube Live broadcasts.
 
 [![checks](https://github.com/cweiture/wyze-stream/actions/workflows/checks.yml/badge.svg)](https://github.com/cweiture/wyze-stream/actions/workflows/checks.yml)
 
 Stream a Wyze Cam v4 over native RTSPS, or use Wyze Bridge for legacy cameras
 and Window Cams. Both paths copy H.264 video into a verified, encrypted YouTube
 RTMPS upload with silent stereo AAC audio. Video is not re-encoded.
-Each host runs one selected camera and one managed upload.
+Each deployment selects one camera and one managed upload. Multiple isolated
+deployments can run together from the same checkout on one host, including a
+native v4 front camera alongside a bridged Window Cam using Gwell.
 
 | Mode | Video path | Camera/account requirements |
 | --- | --- | --- |
@@ -166,6 +168,46 @@ and reinstall services for the selected mode. Follow the exact
 [switching and upgrade procedures](docs/deployment.md#changing-settings-modes-and-upgrading).
 The relay lock prevents duplicate managed uploads from one deployment.
 `test-bridge.py` and `youtube-relay.sh` remain compatibility entry points.
+
+## Two streams on one host
+
+Keep an existing default deployment running, then add a named deployment with
+its own YouTube key. For example, a native v4 front stream plus a bridged Window
+Cam rear stream:
+
+```sh
+python3 wyze_stream.py --config config.backyard.local.json configure --bridged
+python3 wyze_stream.py --config config.backyard.local.json validate
+python3 wyze_stream.py --config config.backyard.local.json bridge
+python3 wyze_stream.py --config config.backyard.local.json relay --check --seconds 30
+python3 wyze_stream.py --config config.backyard.local.json install-services --instance backyard
+```
+
+New `config.NAME.local.json` setup automatically selects `secrets.NAME.local.json`,
+`state/NAME/`, a separate container name, and ports not already assigned in other
+local configuration files. Check those ports against other applications before
+starting. Set the Window Cam's reserved LAN IP and verify the bridge admits only
+that camera. Enter the second event's key at the hidden prompt. Each profile has
+its own credentials, relay lock, watchdog, retry loop, and systemd services.
+
+The default front relay stays `wyze-stream-relay.service`. This example adds
+`wyze-stream-backyard-bridge.service` and `wyze-stream-backyard-relay.service`;
+installing or stopping them does not alter the default services. Always use the
+same `--config` path and `--instance` name for subsequent installations/upgrades.
+
+```sh
+systemctl --user status wyze-stream-relay wyze-stream-backyard-relay --no-pager
+journalctl --user -u wyze-stream-backyard-relay -f
+# Stop only the additional deployment, including after reboot:
+systemctl --user disable --now wyze-stream-backyard-relay wyze-stream-backyard-bridge
+```
+
+Never share a state directory, bridge container name, listening port, or YouTube
+key between profiles. Existing profiles are not automatically rewritten. The
+native front process does not depend on the rear bridge, and a native named
+deployment disables only its own named bridge. Concurrent native 1440p and
+bridged 1080p uploads have been tested on Ubuntu. Revalidate host capacity,
+camera reception, and viewer playback for your own combination.
 
 ## Repeat on another Pi or Linux host
 

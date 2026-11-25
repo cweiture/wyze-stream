@@ -77,6 +77,24 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn('synthetic-private-key', known)
             self.assertIn('synthetic-private-token', known)
 
+    def test_all_profile_camera_settings_and_custom_states_are_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('front', 'rear'):
+                state = root / 'state' / name
+                state.mkdir(parents=True)
+                (root / f'config.{name}.local.json').write_text(json.dumps({
+                    'camera': {'id': f'synthetic-camera-{name}'},
+                    'secrets_file': f'secrets.{name}.local.json',
+                    'bridge': {'state_dir': f'state/{name}'},
+                }))
+                (root / f'secrets.{name}.local.json').write_text(json.dumps({'youtube_key': f'synthetic-key-{name}'}))
+                (state / 'session.json').write_text(json.dumps({'auth': {'access_token': f'synthetic-token-{name}'}}))
+            known = public.private_values(root)
+            for name in ('front', 'rear'):
+                for prefix in ('synthetic-camera-', 'synthetic-key-', 'synthetic-token-'):
+                    self.assertIn(prefix + name, known)
+
 
 if __name__ == '__main__':
     unittest.main()

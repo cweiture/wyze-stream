@@ -11,6 +11,10 @@ Both paths use TCP input transport, copy H.264 video, and add silent stereo AAC
 audio. The host never uploads the camera microphone. Source H.265/HEVC is not
 supported by this H.264/FLV relay. The YouTube upload uses verified TLS.
 
+One deployment still selects exactly one camera. Use independent named
+deployments for multiple simultaneous streams on one host; native and bridged
+deployments can run together. See [multiple cameras on one host](#multiple-cameras-on-one-host).
+
 Native v4 RTSPS was exercised on Ubuntu with camera firmware 4.52.17.27,
 2560×1440 at 20 fps, local captures/full decoding, local FLV checks, and advancing
 upload bytes on the same FFmpeg process. The Window Cam bridge was exercised at
@@ -49,6 +53,15 @@ uses inert bridge camera placeholders; switching an existing bridge host to
 native preserves its bridge selection for rollback. No camera ID is required
 at native setup. Camera `stream_name` and native RTSP authentication username
 are independent and need not match.
+
+For a new `config.NAME.local.json`, setup isolates the defaults: the private
+secret file is `secrets.NAME.local.json`, state/lock directory is `state/NAME/`,
+and container name is `wyze-stream-NAME`. The default port candidates are
+incremented to avoid other saved local configurations; check for unrelated
+applications already listening on the resulting ports. Names use lowercase
+letters, digits, and hyphens, start with a letter, and are at most 32 characters.
+Existing configuration files retain their settings and must be checked for
+shared resources manually.
 
 ## Secrets and credentials
 
@@ -157,11 +170,78 @@ In native mode, expect relay `enabled/active`, bridge `disabled/inactive`, and
 no bridge container. In bridged mode, expect both `enabled/active` and one camera
 in the bridge dashboard. Native mode does not expose that dashboard.
 
+These names refer to the default deployment. For an additional deployment,
+`install-services --instance NAME` writes `wyze-stream-NAME-relay.service` and
+`wyze-stream-NAME-bridge.service`. Its bridge dependency and any bridge-disable
+operation are scoped to NAME; default and other named units remain untouched.
+
 To stop a broadcast and prevent restart at boot:
 
 ```sh
 systemctl --user disable --now wyze-stream-relay wyze-stream-bridge
 ```
+
+## Multiple cameras on one host
+
+For an existing native front deployment, leave its configuration, credentials,
+and running default service in place. Create a separate profile for the bridged
+Window Cam and its own YouTube event/key:
+
+```sh
+python3 wyze_stream.py --config config.backyard.local.json configure --bridged
+python3 wyze_stream.py --config config.backyard.local.json validate
+python3 wyze_stream.py --config config.backyard.local.json bridge
+python3 wyze_stream.py --config config.backyard.local.json relay --check --seconds 30
+python3 wyze_stream.py --config config.backyard.local.json install-services --instance backyard
+```
+
+Verify the generated private profile has a distinct state directory/lock,
+secret file, container name, ports, and YouTube key. Native profiles also need
+separate state directories because the lock is per deployment. Do not copy a
+native URL into bridged secrets. Configure the Window Cam's reserved LAN IP;
+`GWELL_ENABLED` is already enabled and the sidecar starts for the selected Window
+Cam. Confirm exactly that camera in this profile's authenticated dashboard.
+First media may take several minutes despite an initial `streaming` state.
+
+On Ubuntu, concurrent native 2560×1440/20 fps and Gwell-bridged 1920×1080 uploads
+were tested with advancing upload counters on distinct FFmpeg processes. Each
+has its own watchdog/retry loop. Packet warnings from the Window Cam remain
+possible; separate streams do not repair the source video or guarantee capacity
+for arbitrary extra cameras.
+
+Monitor both deployments:
+
+```sh
+systemctl --user status wyze-stream-relay wyze-stream-backyard-relay --no-pager
+journalctl --user -u wyze-stream-backyard-bridge -u wyze-stream-backyard-relay -f
+ss -Otinp state established dport = :443
+```
+
+Check acknowledged upload bytes separately for each encoder PID. An advancing
+front upload does not prove the rear upload is healthy. Check each event's
+intended picture, Studio health, and playback separately.
+
+For a rear-only restart, settings change, or mode switch, stop only the rear
+units before editing, then validate/test with its config and reinstall with its
+same instance name:
+
+```sh
+systemctl --user stop wyze-stream-backyard-relay wyze-stream-backyard-bridge
+python3 wyze_stream.py --config config.backyard.local.json validate
+# After settings changes, start this bridge only if this profile is bridged.
+python3 wyze_stream.py --config config.backyard.local.json bridge
+python3 wyze_stream.py --config config.backyard.local.json relay --check --seconds 30
+python3 wyze_stream.py --config config.backyard.local.json install-services --instance backyard
+```
+
+If switching the named profile to native, run its `configure --native-rtsp`
+while stopped and omit the `bridge` command. To disable only the rear stream
+persistently, use `systemctl --user disable --now` with both named rear units.
+The default procedures below apply per deployment: substitute its config and
+unit names, and keep `--instance NAME` on every named service installation.
+Never install a second configuration without `--instance`; the unqualified
+installer manages the default units. User lingering covers all deployments on
+the host. A reboot acceptance test interrupts and must verify every stream.
 
 ## Maintenance and diagnosis
 
@@ -308,7 +388,10 @@ git config core.hooksPath .githooks
 
 The hook audits the entire index against the public allowlist and known local
 secrets. The scanner detects authenticated RTSP/RTSPS URLs, common tokens, and
-raw/URL-encoded credential components from the saved native URL. `.gitignore`
+raw/URL-encoded credential components from the saved native URL.
+The audit reads every root `*.local.json` profile, its selected secret file,
+and its custom state directory, so extra camera credentials and sessions are
+also compared against public content. `.gitignore`
 excludes `*.local.json`, `.env`, sessions, state, logs, archives, and private tools.
 Never force-add those files or skip the hook. CI performs the public audit too,
 but only the host holding the private files can compare against its actual secrets.

@@ -53,6 +53,26 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(ws.load_config(path), cfg)
             self.assertEqual(ws.load_secrets(cfg, path), data)
 
+    def test_new_named_profile_cannot_overwrite_front_secrets_or_share_its_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            front = root / 'config.local.json'
+            ws.private_write(front, configuration())
+            ws.private_write(root / 'secrets.local.json', credentials())
+            before = (root / 'secrets.local.json').read_bytes()
+            rear = root / 'config.rear.local.json'
+            url = 'rtsps://192.0.2.20/stream0'
+            with patch.object(ws.sys.stdin, 'isatty', return_value=True), \
+                    patch.object(ws.getpass, 'getpass', side_effect=[url, 'synthetic-rear-key']):
+                ws.configure(rear, native_rtsp=True)
+            cfg = ws.load_config(rear)
+            self.assertEqual(cfg['secrets_file'], 'secrets.rear.local.json')
+            self.assertEqual(cfg['bridge']['state_dir'], 'state/rear')
+            self.assertNotEqual(cfg['bridge']['dashboard_port'], configuration()['bridge']['dashboard_port'])
+            self.assertNotEqual(cfg['bridge']['rtsp_port'], configuration()['bridge']['rtsp_port'])
+            self.assertEqual((root / 'secrets.local.json').read_bytes(), before)
+            self.assertEqual(ws.load_secrets(cfg, rear)['youtube_key'], 'synthetic-rear-key')
+
     def test_native_installer_disables_bridge_and_no_start_does_not_stop_it(self):
         for no_start in (False, True):
             with self.subTest(no_start=no_start), tempfile.TemporaryDirectory() as directory:
@@ -187,6 +207,47 @@ class ConfigurationTests(unittest.TestCase):
         relay = rendered['wyze-stream-relay.service']
         self.assertNotIn('wyze-stream-bridge.service', relay)
         self.assertIn('Restart=always', relay)
+
+    def test_named_bridge_deployment_does_not_overwrite_or_stop_front(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unit_dir = root / '.config/systemd/user'
+            front = ws.render_units(root / 'config.local.json', direct=True)
+            unit_dir.mkdir(parents=True)
+            for name, value in front.items():
+                (unit_dir / name).write_text(value)
+            back_path = root / 'config.rear.local.json'
+            with patch.object(Path, 'home', return_value=root), \
+                    patch.object(ws, 'require_tools'), \
+                    patch.object(ws.subprocess, 'run') as run:
+                ws.install_services(configuration(), back_path, credentials(), instance='rear')
+            for name, value in front.items():
+                self.assertEqual((unit_dir / name).read_text(), value)
+            relay = (unit_dir / 'wyze-stream-rear-relay.service').read_text()
+            bridge = (unit_dir / 'wyze-stream-rear-bridge.service').read_text()
+            self.assertIn('Wants=wyze-stream-rear-bridge.service', relay)
+            self.assertIn(str(back_path), relay)
+            self.assertIn(str(back_path), bridge)
+            for call in run.call_args_list:
+                self.assertNotIn('wyze-stream-relay.service', call.args[0])
+                self.assertNotIn('wyze-stream-bridge.service', call.args[0])
+
+    def test_named_native_deployment_disables_only_its_own_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = credentials()
+            data['camera_rtsp_url'] = 'rtsps://192.0.2.20/stream0'
+            with patch.object(Path, 'home', return_value=Path(directory)), \
+                    patch.object(ws, 'require_tools'), \
+                    patch.object(ws.subprocess, 'run') as run:
+                ws.install_services(configuration(), Path(directory) / 'config.local.json', data, instance='rear')
+            disable = next(call.args[0] for call in run.call_args_list if 'disable' in call.args[0])
+            self.assertIn('wyze-stream-rear-bridge.service', disable)
+            self.assertNotIn('wyze-stream-bridge.service', disable)
+
+    def test_instance_names_cannot_escape_the_unit_directory(self):
+        for name in ('../front', 'front/rear', 'rear.service', 'UPPER', '-rear', 'x' * 33, 'rear\nfront'):
+            with self.subTest(name=name), self.assertRaises(ws.ConfigError):
+                ws.render_units(Path('/tmp/config.local.json'), instance=name)
 
     def test_bridge_refuses_to_adopt_another_camera(self):
         cfg = configuration()
